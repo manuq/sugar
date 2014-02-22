@@ -30,6 +30,7 @@ from sugar3.graphics.scrollingdetector import ScrollingDetector
 from sugar3.graphics.scrollingdetector import connect_treeview_to_detector
 from sugar3 import util
 from sugar3 import profile
+from sugar3.graphics.palettewindow import TreeViewInvoker
 
 from jarabe.journal.listmodel import ListModel
 from jarabe.journal.palettes import ObjectPalette, BuddyPalette
@@ -44,13 +45,54 @@ UPDATE_INTERVAL = 300
 class TreeView(Gtk.TreeView):
     __gtype_name__ = 'JournalTreeView'
 
-    def __init__(self):
+    def __init__(self, journalactivity):
         Gtk.TreeView.__init__(self)
+
+        self._journalactivity = journalactivity
+        self.icon_activity_column = None
+
+        self._invoker = TreeViewInvoker()
+        self._invoker.attach_treeview(self)
+
         self.set_headers_visible(False)
         self.set_enable_search(False)
         self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK |
                         Gdk.EventMask.TOUCH_MASK |
                         Gdk.EventMask.BUTTON_RELEASE_MASK)
+
+    def connect_to_scroller(self, scrolled):
+        scrolled.connect('scroll-start', self._scroll_start_cb)
+        scrolled.connect('scroll-end', self._scroll_end_cb)
+
+    def _scroll_start_cb(self, event):
+        self._invoker.detach()
+
+    def _scroll_end_cb(self, event):
+        self._invoker.attach_treeview(self)
+
+    def create_palette(self, path, column):
+        if column != self.icon_activity_column:
+            # TODO check other columns
+            return None
+
+        if self._journalactivity.get_list_view().is_dragging():
+            return None
+
+        tree_model = self.get_model()
+        metadata = tree_model.get_metadata(path)
+
+        palette = ObjectPalette(self._journalactivity, metadata, detail=True)
+        palette.connect('detail-clicked',
+                        self.__detail_clicked_cb)
+        palette.connect('volume-error',
+                        self.__volume_error_cb)
+        return palette
+
+    def __detail_clicked_cb(self, palette, uid):
+        self.emit('detail-clicked', uid)
+
+    def __volume_error_cb(self, palette, message, severity):
+        self.emit('volume-error', message, severity)
 
     def do_size_request(self, requisition):
         # HACK: We tell the model that the view is just resizing so it can
@@ -63,6 +105,9 @@ class TreeView(Gtk.TreeView):
         finally:
             if tree_model is not None:
                 tree_model.view_is_resizing = False
+
+    def __del__(self):
+        self._invoker.detach()
 
 
 class BaseListView(Gtk.Bin):
@@ -94,7 +139,7 @@ class BaseListView(Gtk.Bin):
         self.add(self._scrolled_window)
         self._scrolled_window.show()
 
-        self.tree_view = TreeView()
+        self.tree_view = TreeView(self._journalactivity)
         selection = self.tree_view.get_selection()
         selection.set_mode(Gtk.SelectionMode.NONE)
         self.tree_view.props.fixed_height_mode = True
@@ -181,6 +226,7 @@ class BaseListView(Gtk.Bin):
                                                   self.tree_view)
 
         column = Gtk.TreeViewColumn()
+        self.tree_view.icon_activity_column = column
         column.props.sizing = Gtk.TreeViewColumnSizing.FIXED
         column.props.fixed_width = self.cell_icon.props.width
         column.pack_start(self.cell_icon, True)
@@ -725,23 +771,6 @@ class CellRendererActivityIcon(CellRendererIcon):
         self.props.mode = Gtk.CellRendererMode.ACTIVATABLE
 
         self.tree_view = tree_view
-
-    def create_palette(self):
-        if not self._show_palette:
-            return None
-
-        if self.is_scrolling() or self._journalactivity.get_list_view().is_dragging():
-            return None
-
-        tree_model = self.tree_view.get_model()
-        metadata = tree_model.get_metadata(self.props.palette_invoker.path)
-
-        palette = ObjectPalette(self._journalactivity, metadata, detail=True)
-        palette.connect('detail-clicked',
-                        self.__detail_clicked_cb)
-        palette.connect('volume-error',
-                        self.__volume_error_cb)
-        return palette
 
     def __detail_clicked_cb(self, palette, uid):
         self.emit('detail-clicked', uid)
